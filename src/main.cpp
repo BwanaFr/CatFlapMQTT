@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <Arduino.h>
 #include <FS.h>
 #include <WiFi.h>
 #include <AsyncTCP.h>
@@ -42,6 +41,9 @@ HardwareSerial FlapSerial(2);
 void newState(ESPEasyCfgState state) {
   if(state == ESPEasyCfgState::Reconfigured){
     client.disconnect();
+  }else if(state == ESPEasyCfgState::Connected){
+    Serial.print("DNS: ");
+    Serial.println(WiFi.dnsIP());
   }
 }
 
@@ -59,11 +61,19 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.println(data);
   if(strcmp(topic, flapCommand) == 0){
     StaticJsonDocument<300> json;
-    if (deserializeJson(json, data)) {
-      if(strcmp(json["type"], "mode") == 0){
+    DeserializationError error = deserializeJson(json, data);
+    if (error) {
+      Serial.println("Bad JSON payload");
+    }else{
+      const char* type = json["type"];
+      if(!type){
+        Serial.println("Expecting comand type");
+        return;
+      }
+      if(strcmp(type, "mode") == 0){
         //Changing mode
         for(int i=0;i<FLAP_MODE_COUNT;++i){
-          if(json["mode"] == FLAP_MODE[i]){
+          if(strcmp(json["mode"], FLAP_MODE[i]) == 0){
             Serial.print("Changing mode to ");
             Serial.println(FLAP_MODE[i]);
             FlapSerial.write('M');
@@ -71,7 +81,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
             break;
           }
         }
-      }else if(strcmp(json["type"], "config") == 0){
+      }else if(strcmp(type, "config") == 0){
         const char* write = json["write"];
         if(json.containsKey("index")){
           int index = json["index"];          
@@ -101,8 +111,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
         const char* type = json["type"];
         Serial.println(type);
       }
-    }else{
-      Serial.println("Bad JSON payload");
     }
   }
 }
@@ -238,11 +246,15 @@ void readSerial(){
 void reconnect() {
   // Loop until we're reconnected
   while (!client.connected()) {
+    IPAddress mqttServerIP;
+    WiFi.hostByName(mqttServer.getValue().c_str(), mqttServerIP);
     Serial.print("Attempting MQTT connection to ");
     Serial.print(mqttServer.getValue().c_str());
     Serial.print(':');
     Serial.print(mqttPort.getValue());
-    Serial.print("...");
+    Serial.print('(');
+    Serial.print(mqttServerIP);
+    Serial.print(")...");
     // Create a Client ID baased on MAC address
     byte mac[6];                     // the MAC address of your Wifi shield
     WiFi.macAddress(mac);
@@ -251,7 +263,7 @@ void reconnect() {
     clientId += String(mac[4], HEX);
     clientId += String(mac[5], HEX);
     // Attempt to connect
-    client.setServer(mqttServer.getValue().c_str(), mqttPort.getValue());
+    client.setServer(mqttServerIP, mqttPort.getValue());
     if (client.connect(clientId.c_str(), mqttUser.getValue().c_str(), mqttPass.getValue().c_str())) {
       Serial.println("connected");
       // Once connected, publish an announcement...
@@ -263,9 +275,11 @@ void reconnect() {
       Serial.print("failed, rc=");
       Serial.print(client.state());
       Serial.println(" try again in 5 seconds");
+      client.disconnect();
       // Wait 5 seconds before retrying
-      for(int i=0;i<50;++i){
-        delay(100);
+      for(int i=0;i<5000;++i){
+        delay(1);
+        client.loop();
       }
     }
   }
